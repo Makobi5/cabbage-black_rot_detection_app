@@ -8,6 +8,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:image/image.dart' as img;
 
+
 void main() {
   // Ensure proper Flutter initialization
   WidgetsFlutterBinding.ensureInitialized();
@@ -299,11 +300,14 @@ class _HomePageState extends State<HomePage> {
         }
       }
       
-      // Convert to InputImage
-      final inputImage = _getInputImage(image);
-      
-      // Process the image with ML Kit
-      final List<ImageLabel> labels = await _imageLabeler.processImage(inputImage);
+    // First, process the image to normalize it
+    final processedImage = await _preprocessImage(image);
+    
+    // Convert to InputImage
+    final inputImage = _getInputImage(processedImage);
+    
+    // Process the image with ML Kit
+    final List<ImageLabel> labels = await _imageLabeler.processImage(inputImage);
       
       // Check results
       if (labels.isEmpty) {
@@ -351,6 +355,59 @@ class _HomePageState extends State<HomePage> {
       }
     }
   }
+
+  // Add this new method to preprocess the image
+Future<File> _preprocessImage(File imageFile) async {
+  try {
+    // Decode the image file
+    final bytes = await imageFile.readAsBytes();
+    final image = img.decodeImage(bytes);
+    
+    if (image == null) {
+      throw Exception('Failed to decode image');
+    }
+    
+    // Resize to the model's expected input size (usually 224x224 for many ML models)
+    final resized = img.copyResize(image, width: 224, height: 224);
+    
+    // Normalize pixel values to [0, 1]
+    final normalized = _normalizeImage(resized);
+    
+    // Save the processed image to a temporary file
+    final tempDir = await getTemporaryDirectory();
+    final tempFile = File('${tempDir.path}/processed_image.jpg');
+    await tempFile.writeAsBytes(img.encodeJpg(normalized));
+    
+    return tempFile;
+  } catch (e) {
+    debugPrint('Image preprocessing error: $e');
+    // Return the original file if processing fails
+    return imageFile;
+  }
+}
+
+
+// Updated _normalizeImage method
+img.Image _normalizeImage(img.Image image) {
+  // Create a copy of the image to modify
+  final normalized = img.Image.from(image);
+  
+  for (int y = 0; y < normalized.height; y++) {
+    for (int x = 0; x < normalized.width; x++) {
+      final pixel = normalized.getPixel(x, y);
+      
+      // Normalize to [0,1] range and back to [0,255]
+      final r = ((pixel.r / 255.0) * 255).round();
+      final g = ((pixel.g / 255.0) * 255).round();
+      final b = ((pixel.b / 255.0) * 255).round();
+      
+      // Use the correct method to create a pixel
+      normalized.setPixelRgba(x, y, r, g, b, pixel.a);
+    }
+  }
+  
+  return normalized;
+}
 
   @override
   void dispose() {
