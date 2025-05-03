@@ -6,19 +6,23 @@ plugins {
 }
 
 android {
+
     compileSdk = 35 // Updated to SDK 35
-    namespace = "com.example.rots_pot_app" 
+    namespace "com.google_mlkit_image_labeling"
+     namespace "com.example.rots_pot_app"
+
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_1_8
         targetCompatibility = JavaVersion.VERSION_1_8
     }
-            // Add this for TFLite
-        aaptOptions {
-            noCompress 'tflite'
-            noCompress 'lite'
-        }
+        
+    // Add this for TFLite
+    aaptOptions {
+        noCompress 'tflite'
+        noCompress 'lite'
+    }
 
     kotlinOptions {
         jvmTarget = JavaVersion.VERSION_1_8
@@ -27,7 +31,7 @@ android {
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId "com.example.rots_pot_app"
-        minSdkVersion 21 // Make sure this is at 
+        minSdkVersion 21 // Make sure this is at least 21
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
@@ -45,15 +49,54 @@ android {
 flutter {
     source = "../.."
 }
+
 dependencies {
     implementation 'org.tensorflow:tensorflow-lite:2.4.0' // or latest version
     implementation 'org.tensorflow:tensorflow-lite-support:0.3.0' // optional but recommended
     // other dependencies...
 }
+
 // Add this configuration block
 configurations.all {
     resolutionStrategy {
         force 'org.tensorflow:tensorflow-lite-api:2.7.0'
         exclude group: 'com.google.ai.edge.litert', module: 'litert-api'
+    }
+}
+
+// Add this to fix the ML Kit namespace issue
+rootProject.allprojects {
+    afterEvaluate { project ->
+        if (project.hasProperty('android') && 
+            project.name.toString().contains('google_mlkit')) {
+                
+            if (project.name.toString() == 'google_mlkit_commons') {
+                project.android.namespace = "com.google.mlkit.common"
+            } else {
+                def moduleName = project.name.toString().replace('google_mlkit_', '')
+                project.android.namespace = "com.google.mlkit.${moduleName}"
+            }
+                
+            // Ensure compatibility with your project
+            project.android.compileSdk = 35
+            
+            // Make sure compileOptions is set
+            project.android.compileOptions {
+                sourceCompatibility JavaVersion.VERSION_1_8
+                targetCompatibility JavaVersion.VERSION_1_8
+            }
+        }
+    }
+}
+// Add this to the end of your app/build.gradle file
+rootProject.subprojects { subproject ->
+    afterEvaluate {
+        if (subproject.name == 'google_mlkit_commons' && subproject.hasProperty('android')) {
+            subproject.android {
+                if (!subproject.android.hasProperty('namespace')) {
+                    namespace "com.google.mlkit.common"
+                }
+            }
+        }
     }
 }

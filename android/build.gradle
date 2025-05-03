@@ -3,6 +3,20 @@ allprojects {
         google()
         mavenCentral()
     }
+    
+    // Add this block to handle the namespace issue for all subprojects
+    afterEvaluate { project ->
+        if (project.hasProperty('android')) {
+            if (!project.android.hasProperty('namespace') && project.android.hasProperty('defaultConfig')) {
+                if (project.android.defaultConfig.hasProperty('applicationId')) {
+                    project.android.namespace = project.android.defaultConfig.applicationId
+                } else if (project.plugins.hasPlugin('com.android.library') && 
+                          project.name.contains('google_mlkit_commons')) {
+                    project.android.namespace = "com.google.mlkit.common"
+                }
+            }
+        }
+    }
 }
 
 rootProject.buildDir = "../build"
@@ -16,4 +30,20 @@ subprojects {
 tasks.register("clean", Delete) {
     delete rootProject.buildDir
 }
-
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+buildscript {
+    ext.kotlin_version = '1.7.10'
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath 'com.android.tools.build:gradle:7.3.0'  // Update to this or newer
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
+    }
+}

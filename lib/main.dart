@@ -1,9 +1,12 @@
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:tflite/tflite.dart';
+import 'package:google_mlkit_image_labeling/google_mlkit_image_labeling.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:image/image.dart' as img;
 
 void main() {
   // Ensure proper Flutter initialization
@@ -45,8 +48,13 @@ class _HomePageState extends State<HomePage> {
   bool _loading = true; // Start with loading state so user can see something is happening
   bool _modelLoaded = false;
   File? _image;
-  List? _output;
+  Map<String, double>? _output;
   final picker = ImagePicker();
+  
+  // Custom model variables
+  late ImageLabeler _imageLabeler;
+  List<String> _labels = [];
+  bool _isModelDownloaded = false;
 
   @override
   void initState() {
@@ -68,7 +76,7 @@ class _HomePageState extends State<HomePage> {
       // Then load the model
       final modelLoadResult = await _loadModel();
       
-      if (modelLoadResult != null && mounted) {
+      if (modelLoadResult && mounted) {
         setState(() {
           _modelLoaded = true;
           _loading = false;
@@ -115,24 +123,40 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  // Load the TFLite model with explicit return value
-  Future<String?> _loadModel() async {
+  // Load the model with explicit return value
+  Future<bool> _loadModel() async {
     try {
-      // First close any previously loaded model
-      await Tflite.close();
+      // Load labels
+      final labelsData = await rootBundle.loadString('assets/labels.txt');
+      _labels = labelsData.trim().split('\n');
       
-      // Now load the model and return the result
-      return await Tflite.loadModel(
-        model: "assets/model.tflite",
-        labels: "assets/labels.txt",
+      // Copy model file to device storage from assets
+      final modelPath = await _getModelPath('assets/model.tflite');
+      
+      // Create custom image labeler
+      final options = LocalLabelerOptions(
+        confidenceThreshold: 0.5,
+        modelPath: modelPath,
       );
-    } on PlatformException catch (e) {
-      debugPrint('Platform exception loading model: $e');
-      return null;
+      
+      _imageLabeler = ImageLabeler(options: options);
+      _isModelDownloaded = true;
+      
+      return true;
     } catch (e) {
       debugPrint('General exception loading model: $e');
-      return null;
+      return false;
     }
+  }
+  
+  // Helper to get model file path from assets
+  Future<String> _getModelPath(String assetPath) async {
+    final byteData = await rootBundle.load(assetPath);
+    final tempDir = await getTemporaryDirectory();
+    final file = File('${tempDir.path}/black_rot_model.tflite');
+    await file.writeAsBytes(byteData.buffer.asUint8List(
+        byteData.offsetInBytes, byteData.lengthInBytes));
+    return file.path;
   }
 
   // Check if model is loaded and working
@@ -152,7 +176,7 @@ class _HomePageState extends State<HomePage> {
   Future<void> _reloadModel() async {
     try {
       final result = await _loadModel();
-      if (result != null && mounted) {
+      if (result && mounted) {
         setState(() {
           _modelLoaded = true;
         });
@@ -258,7 +282,12 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  // Classify the image using the TFLite model with error handling
+  // Convert File to InputImage for ML Kit
+  InputImage _getInputImage(File imageFile) {
+    return InputImage.fromFilePath(imageFile.path);
+  }
+
+  // Classify the image using the model
   Future<void> _classifyImage(File image) async {
     try {
       if (!_modelLoaded) {
@@ -270,21 +299,43 @@ class _HomePageState extends State<HomePage> {
         }
       }
       
-      var output = await Tflite.runModelOnImage(
-        path: image.path,
-        numResults: 2,
-        threshold: 0.5,
-        imageMean: 127.5,
-        imageStd: 127.5,
-      );
-
-      if (output == null) {
-        throw Exception('Classification returned null result');
+      // Convert to InputImage
+      final inputImage = _getInputImage(image);
+      
+      // Process the image with ML Kit
+      final List<ImageLabel> labels = await _imageLabeler.processImage(inputImage);
+      
+      // Check results
+      if (labels.isEmpty) {
+        throw Exception('No labels detected');
       }
+      
+      // Create output map with label and confidence
+      final result = <String, double>{};
+      
+      // Get the highest confidence label
+      final highestConfidenceLabel = labels.reduce(
+        (curr, next) => curr.confidence > next.confidence ? curr : next
+      );
+      
+      // Map the detected label to our application's labels if possible
+      // Most ML Kit models return generic labels, but your model might have specific classes
+      String labelText = highestConfidenceLabel.label;
+      
+      // If your model uses indices instead of text labels
+      // You may need to map the index to your label list
+      if (int.tryParse(labelText) != null) {
+        final index = int.parse(labelText);
+        if (index < _labels.length) {
+          labelText = _labels[index];
+        }
+      }
+      
+      result[labelText] = highestConfidenceLabel.confidence;
 
       if (mounted) {
         setState(() {
-          _output = output;
+          _output = result;
           _loading = false;
         });
       }
@@ -303,11 +354,7 @@ class _HomePageState extends State<HomePage> {
 
   @override
   void dispose() {
-    try {
-      Tflite.close();
-    } catch (e) {
-      debugPrint('Error closing TFLite: $e');
-    }
+    _imageLabeler.close();
     super.dispose();
   }
 
@@ -367,15 +414,15 @@ class _HomePageState extends State<HomePage> {
                           Container(
                             padding: const EdgeInsets.all(12),
                             decoration: BoxDecoration(
-                              color: _output![0]['label'] == 'Healthy' ? Colors.green.shade100 : Colors.red.shade100,
+                              color: _output!.keys.first == 'Healthy' ? Colors.green.shade100 : Colors.red.shade100,
                               borderRadius: BorderRadius.circular(10),
                             ),
                             child: Text(
-                              'Result: ${_output![0]['label']} (${(_output![0]['confidence'] * 100).toStringAsFixed(2)}%)',
+                              'Result: ${_output!.keys.first} (${(_output!.values.first * 100).toStringAsFixed(2)}%)',
                               style: TextStyle(
                                 fontSize: 20,
                                 fontWeight: FontWeight.bold,
-                                color: _output![0]['label'] == 'Healthy' ? Colors.green.shade900 : Colors.red.shade900,
+                                color: _output!.keys.first == 'Healthy' ? Colors.green.shade900 : Colors.red.shade900,
                               ),
                             ),
                           ),
