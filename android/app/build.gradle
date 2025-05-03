@@ -14,6 +14,11 @@ android {
         sourceCompatibility = JavaVersion.VERSION_1_8
         targetCompatibility = JavaVersion.VERSION_1_8
     }
+            // Add this for TFLite
+        aaptOptions {
+            noCompress 'tflite'
+            noCompress 'lite'
+        }
 
     kotlinOptions {
         jvmTarget = JavaVersion.VERSION_1_8
@@ -39,4 +44,16 @@ android {
 
 flutter {
     source = "../.."
+}
+dependencies {
+    implementation 'org.tensorflow:tensorflow-lite:2.4.0' // or latest version
+    implementation 'org.tensorflow:tensorflow-lite-support:0.3.0' // optional but recommended
+    // other dependencies...
+}
+// Add this configuration block
+configurations.all {
+    resolutionStrategy {
+        force 'org.tensorflow:tensorflow-lite-api:2.7.0'
+        exclude group: 'com.google.ai.edge.litert', module: 'litert-api'
+    }
 }
