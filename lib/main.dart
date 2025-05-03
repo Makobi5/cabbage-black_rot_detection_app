@@ -1,10 +1,14 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:tflite/tflite.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 void main() {
+  // Ensure proper Flutter initialization
+  WidgetsFlutterBinding.ensureInitialized();
+  
   // Add error handling for the Flutter framework
   FlutterError.onError = (FlutterErrorDetails details) {
     FlutterError.presentError(details);
@@ -38,31 +42,56 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  bool _loading = false; // Initialize as false to prevent immediate loading
+  bool _loading = true; // Start with loading state so user can see something is happening
+  bool _modelLoaded = false;
   File? _image;
   List? _output;
   final picker = ImagePicker();
-  bool _modelLoaded = false;
 
   @override
   void initState() {
     super.initState();
-    // Initialize permissions and model with proper error handling
-    _initializeApp();
+    // Delay model loading slightly to allow Flutter to initialize properly
+    Future.delayed(const Duration(milliseconds: 500), () {
+      _initializeApp();
+    });
   }
   
   // Consolidated initialization with error handling
   Future<void> _initializeApp() async {
+    if (!mounted) return;
+    
     try {
+      // Request permissions first
       await _requestPermissions();
-      await _loadModel();
+      
+      // Then load the model
+      final modelLoadResult = await _loadModel();
+      
+      if (modelLoadResult != null && mounted) {
+        setState(() {
+          _modelLoaded = true;
+          _loading = false;
+        });
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Failed to load model. Please restart the app.')),
+          );
+          setState(() {
+            _loading = false;
+          });
+        }
+      }
     } catch (e) {
       debugPrint('Initialization error: $e');
-      // Show an error message to the user if needed
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Error initializing: $e')),
         );
+        setState(() {
+          _loading = false;
+        });
       }
     }
   }
@@ -86,29 +115,71 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  // Load the TFLite model
-  Future<void> _loadModel() async {
+  // Load the TFLite model with explicit return value
+  Future<String?> _loadModel() async {
     try {
-      await Tflite.loadModel(
+      // First close any previously loaded model
+      await Tflite.close();
+      
+      // Now load the model and return the result
+      return await Tflite.loadModel(
         model: "assets/model.tflite",
         labels: "assets/labels.txt",
       );
-      
-      if (mounted) {
+    } on PlatformException catch (e) {
+      debugPrint('Platform exception loading model: $e');
+      return null;
+    } catch (e) {
+      debugPrint('General exception loading model: $e');
+      return null;
+    }
+  }
+
+  // Check if model is loaded and working
+  Future<bool> _checkModelLoaded() async {
+    try {
+      if (!_modelLoaded) {
+        await _reloadModel();
+        return _modelLoaded;
+      }
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+  
+  // Reload model if needed
+  Future<void> _reloadModel() async {
+    try {
+      final result = await _loadModel();
+      if (result != null && mounted) {
         setState(() {
           _modelLoaded = true;
-          _loading = false;
         });
       }
     } catch (e) {
-      debugPrint('Model loading error: $e');
-      rethrow;
+      debugPrint('Error reloading model: $e');
     }
   }
 
   // Pick image from camera with error handling
   Future<void> _pickImageCamera() async {
     try {
+      // Check model first
+      final modelReady = await _checkModelLoaded();
+      if (!modelReady) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Model not ready. Please wait or restart the app.')),
+          );
+        }
+        return;
+      }
+      
+      setState(() {
+        _loading = true;
+      });
+      
       final pickedFile = await picker.pickImage(
         source: ImageSource.camera,
         imageQuality: 85,
@@ -117,9 +188,14 @@ class _HomePageState extends State<HomePage> {
       if (pickedFile != null && mounted) {
         setState(() {
           _image = File(pickedFile.path);
-          _loading = true;
         });
         await _classifyImage(_image!);
+      } else {
+        if (mounted) {
+          setState(() {
+            _loading = false;
+          });
+        }
       }
     } catch (e) {
       debugPrint('Camera error: $e');
@@ -137,6 +213,21 @@ class _HomePageState extends State<HomePage> {
   // Pick image from gallery with error handling
   Future<void> _pickImageGallery() async {
     try {
+      // Check model first
+      final modelReady = await _checkModelLoaded();
+      if (!modelReady) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Model not ready. Please wait or restart the app.')),
+          );
+        }
+        return;
+      }
+      
+      setState(() {
+        _loading = true;
+      });
+      
       final pickedFile = await picker.pickImage(
         source: ImageSource.gallery,
         imageQuality: 85,
@@ -145,9 +236,14 @@ class _HomePageState extends State<HomePage> {
       if (pickedFile != null && mounted) {
         setState(() {
           _image = File(pickedFile.path);
-          _loading = true;
         });
         await _classifyImage(_image!);
+      } else {
+        if (mounted) {
+          setState(() {
+            _loading = false;
+          });
+        }
       }
     } catch (e) {
       debugPrint('Gallery error: $e');
@@ -166,7 +262,12 @@ class _HomePageState extends State<HomePage> {
   Future<void> _classifyImage(File image) async {
     try {
       if (!_modelLoaded) {
-        throw Exception('Model not loaded yet');
+        // Try reloading the model
+        await _reloadModel();
+        
+        if (!_modelLoaded) {
+          throw Exception('Model not loaded yet');
+        }
       }
       
       var output = await Tflite.runModelOnImage(
@@ -176,6 +277,10 @@ class _HomePageState extends State<HomePage> {
         imageMean: 127.5,
         imageStd: 127.5,
       );
+
+      if (output == null) {
+        throw Exception('Classification returned null result');
+      }
 
       if (mounted) {
         setState(() {
@@ -226,59 +331,55 @@ class _HomePageState extends State<HomePage> {
             child: Column(
               children: [
                 Expanded(
-                  child: SingleChildScrollView(
-                    physics: const NeverScrollableScrollPhysics(),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 24),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.center,
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const SizedBox(height: 30),
-                          const Text(
-                            'Detect Black Rot in Cabbage',
-                            style: TextStyle(
-                              fontSize: 24,
-                              fontWeight: FontWeight.bold, 
-                              color: Colors.green,
-                            ),
-                            textAlign: TextAlign.center,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 24),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Text(
+                          'Detect Black Rot in Cabbage',
+                          style: TextStyle(
+                            fontSize: 24,
+                            fontWeight: FontWeight.bold, 
+                            color: Colors.green,
                           ),
-                          const SizedBox(height: 30),
-                          Center(
-                            child: _loading 
-                                ? const CircularProgressIndicator()
-                                : Container(
-                                    constraints: BoxConstraints(
-                                      maxHeight: constraints.maxHeight * 0.4,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      borderRadius: BorderRadius.circular(10),
-                                    ),
-                                    child: _image == null
-                                        ? Image.asset('assets/placeholder.png')
-                                        : Image.file(_image!),
+                          textAlign: TextAlign.center,
+                        ),
+                        const SizedBox(height: 30),
+                        Center(
+                          child: _loading 
+                              ? const CircularProgressIndicator()
+                              : Container(
+                                  constraints: BoxConstraints(
+                                    maxHeight: constraints.maxHeight * 0.4,
                                   ),
-                          ),
-                          const SizedBox(height: 20),
-                          if (_output != null && _output!.isNotEmpty)
-                            Container(
-                              padding: const EdgeInsets.all(12),
-                              decoration: BoxDecoration(
-                                color: _output![0]['label'] == 'Healthy' ? Colors.green.shade100 : Colors.red.shade100,
-                                borderRadius: BorderRadius.circular(10),
-                              ),
-                              child: Text(
-                                'Result: ${_output![0]['label']} (${(_output![0]['confidence'] * 100).toStringAsFixed(2)}%)',
-                                style: TextStyle(
-                                  fontSize: 20,
-                                  fontWeight: FontWeight.bold,
-                                  color: _output![0]['label'] == 'Healthy' ? Colors.green.shade900 : Colors.red.shade900,
+                                  decoration: BoxDecoration(
+                                    borderRadius: BorderRadius.circular(10),
+                                  ),
+                                  child: _image == null
+                                      ? Image.asset('assets/placeholder.png')
+                                      : Image.file(_image!),
                                 ),
+                        ),
+                        const SizedBox(height: 20),
+                        if (_output != null && _output!.isNotEmpty)
+                          Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: _output![0]['label'] == 'Healthy' ? Colors.green.shade100 : Colors.red.shade100,
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Text(
+                              'Result: ${_output![0]['label']} (${(_output![0]['confidence'] * 100).toStringAsFixed(2)}%)',
+                              style: TextStyle(
+                                fontSize: 20,
+                                fontWeight: FontWeight.bold,
+                                color: _output![0]['label'] == 'Healthy' ? Colors.green.shade900 : Colors.red.shade900,
                               ),
                             ),
-                        ],
-                      ),
+                          ),
+                      ],
                     ),
                   ),
                 ),
